@@ -1,0 +1,96 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"math/rand"
+	"sync"
+	"time"
+
+	"github.com/deliveryhero/pipeline/v2"
+)
+
+func gpurun() {
+	transform := pipeline.NewProcessor(func(_ context.Context, s []string) ([]string, error) {
+		return s, nil
+		//return strings.Split(s, ","), nil
+	}, nil)
+
+	double := pipeline.NewProcessor(func(_ context.Context, s string) (string, error) {
+		return s + s, nil
+	}, nil)
+
+	addLeadingZero := pipeline.NewProcessor(func(_ context.Context, s string) (string, error) {
+		return "0" + s, nil
+	}, nil)
+
+	apply := pipeline.Apply(
+		transform,
+		pipeline.Sequence(
+			double,
+			addLeadingZero,
+			double,
+		),
+	)
+	var input = []string{"1"}
+	//input := "1"
+
+	for out := range pipeline.Process(context.Background(), apply, pipeline.Emit(input)) {
+		for j := range out {
+			fmt.Printf("process: %s\n", out[j])
+		}
+	}
+}
+
+func fsleep() {
+	r := rand.Intn(10)
+	fmt.Printf("sleep %d\n", r)
+	time.Sleep(time.Duration(r) * time.Second)
+}
+
+func worker(id int, jobs <-chan int, results chan<- int) {
+	fmt.Println("workerid:%d", id)
+	for job := range jobs {
+		fmt.Println("start new job %d", job)
+		fmt.Printf("Worker %d processing job %d\n", id, job)
+		fsleep()
+		gpurun()
+		results <- job
+	}
+}
+
+func main() {
+	numJobs := 10
+	numWorkers := 3
+
+	jobs := make(chan int, numJobs)
+	results := make(chan int, numJobs)
+
+	var wg sync.WaitGroup
+
+	// Start worker goroutines
+	for i := 1; i <= numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			worker(workerID, jobs, results)
+		}(i)
+	}
+	fmt.Print("enqueue jobs")
+	// Enqueue jobs
+	for i := 1; i <= numJobs; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	fmt.Print("wait for all workers to finish")
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	fmt.Print("collect all result \n")
+	// Collect results
+	for result := range results {
+		fmt.Printf("Result: %d\n", result)
+	}
+}
